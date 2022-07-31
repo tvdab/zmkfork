@@ -27,6 +27,7 @@ int32_t press_count;
 int32_t release_count;
 int32_t timeout_ms;
 int32_t active_leader_position;
+int8_t layer;
 bool first_release;
 struct k_work_delayable release_timer;
 int64_t release_at;
@@ -101,7 +102,7 @@ static int intitialiaze_leader_sequences(struct leader_seq_cfg *seq) {
     return 0;
 }
 
-static bool sequence_active_on_layer(struct leader_seq_cfg *sequence, uint8_t layer) {
+static bool sequence_active_on_layer(struct leader_seq_cfg *sequence) {
     if (sequence->layers[0] == -1) {
         // -1 in the first layer position is global layer scope
         return true;
@@ -171,15 +172,13 @@ static void leader_find_candidates(int32_t position, int count) {
     clear_candidates();
     num_candidates = 0;
     num_comp_candidates = 0;
-    uint8_t highest_active_layer = zmk_keymap_highest_layer_active();
     for (int i = 0; i < CONFIG_ZMK_LEADER_MAX_SEQUENCES_PER_KEY; i++) {
         struct leader_seq_cfg *sequence = sequence_lookup[position][i];
         if (sequence == NULL) {
             continue;
         }
-        if (sequence_active_on_layer(sequence, highest_active_layer) &&
-            sequence->key_positions[count] == position && has_current_sequence(sequence, count) &&
-            !is_duplicate(sequence)) {
+        if (sequence_active_on_layer(sequence) && sequence->key_positions[count] == position &&
+            has_current_sequence(sequence, count) && !is_duplicate(sequence)) {
             sequence_candidates[num_candidates] = sequence;
             num_candidates++;
             if (sequence->key_position_len == count + 1) {
@@ -237,6 +236,7 @@ void zmk_leader_activate(int32_t timeout, bool timeout_on_activation, uint32_t p
     release_count = 0;
     timeout_ms = timeout;
     active_leader_position = position;
+    layer = zmk_keymap_highest_layer_active();
     first_release = false;
     if (timeout_on_activation) {
         reset_timer(k_uptime_get());
