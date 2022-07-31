@@ -20,5 +20,3 @@ child-binding:
       default: [-1]
     immediate-trigger:
       type: boolean
-    slow-release:
-      type: boolean

@@ -16,6 +16,10 @@
 			bindings = <&kp A>;
 		};
 
+		leader_seq_two {
+			key-positions = <3 3>;
+			bindings = <&kp B>;
+		};
 	};
 
 	keymap {

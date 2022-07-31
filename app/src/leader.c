@@ -39,7 +39,6 @@ struct leader_seq_cfg {
 
     bool immediate_trigger;
     bool is_pressed;
-    bool slow_release;
     // the virtual key position is a key position outside the range used by the keyboard.
     // it is necessary so hold-taps can uniquely identify a behavior.
     int32_t virtual_key_position;
@@ -54,7 +53,7 @@ struct leader_seq_cfg {
 const struct zmk_position_state_changed
     *leader_pressed_keys[CONFIG_ZMK_LEADER_MAX_KEYS_PER_SEQUENCE] = {NULL};
 
-uint32_t current_sequence[CONFIG_ZMK_LEADER_MAX_KEYS_PER_SEQUENCE];
+uint32_t current_sequence[CONFIG_ZMK_LEADER_MAX_KEYS_PER_SEQUENCE] = {-1};
 // the set of candidate leader based on the currently leader_pressed_keys
 int num_candidates;
 struct leader_seq_cfg *sequence_candidates[CONFIG_ZMK_LEADER_MAX_SEQUENCES_PER_KEY];
@@ -133,6 +132,15 @@ static bool is_in_current_sequence(int32_t position) {
     return false;
 }
 
+static bool is_duplicate(struct leader_seq_cfg *seq) {
+    for (int i = 0; i < CONFIG_ZMK_LEADER_MAX_KEYS_PER_SEQUENCE; i++) {
+        if (sequence_candidates[i] == seq) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static bool release_key_in_sequence(int32_t position) {
     for (int i = 0; i < release_count; i++) {
         if (leader_pressed_keys[i] && position == leader_pressed_keys[i]->position) {
@@ -152,12 +160,11 @@ static bool all_keys_released() {
     return true;
 }
 
-static int clear_candidates() {
+static void clear_candidates() {
     for (int i = 0; i < CONFIG_ZMK_LEADER_MAX_SEQUENCES_PER_KEY; i++) {
         sequence_candidates[i] = NULL;
         completed_sequence_candidates[i] = NULL;
     }
-    return CONFIG_ZMK_LEADER_MAX_SEQUENCES_PER_KEY;
 }
 
 static void leader_find_candidates(int32_t position, int count) {
@@ -171,7 +178,8 @@ static void leader_find_candidates(int32_t position, int count) {
             continue;
         }
         if (sequence_active_on_layer(sequence, highest_active_layer) &&
-            sequence->key_positions[count] == position && has_current_sequence(sequence, count)) {
+            sequence->key_positions[count] == position && has_current_sequence(sequence, count) &&
+            !is_duplicate(sequence)) {
             sequence_candidates[num_candidates] = sequence;
             num_candidates++;
             if (sequence->key_position_len == count + 1) {
@@ -277,6 +285,7 @@ static int position_state_changed_listener(const zmk_event_t *ev) {
     if (leader_status) {
         if (data->state) { // keydown
             leader_find_candidates(data->position, press_count);
+            LOG_DBG("leader cands: %d comp: %d", num_candidates, num_comp_candidates);
             stop_timer();
             current_sequence[press_count] = data->position;
             leader_pressed_keys[press_count] = data;
@@ -331,7 +340,6 @@ ZMK_SUBSCRIPTION(leader, zmk_position_state_changed);
         .is_pressed = false,                                                                       \
         .key_positions = DT_PROP(n, key_positions),                                                \
         .key_position_len = DT_PROP_LEN(n, key_positions),                                         \
-        .slow_release = DT_PROP(n, slow_release),                                                  \
         .behavior = ZMK_KEYMAP_EXTRACT_BINDING(0, n),                                              \
         .layers = DT_PROP(n, layers),                                                              \
         .layers_len = DT_PROP_LEN(n, layers),                                                      \
