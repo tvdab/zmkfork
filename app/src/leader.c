@@ -23,7 +23,8 @@
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 bool leader_status;
-int32_t count;
+int32_t press_count;
+int32_t release_count;
 int32_t timeout_ms;
 int32_t active_leader_position;
 bool first_release;
@@ -38,6 +39,7 @@ struct leader_seq_cfg {
 
     bool immediate_trigger;
     bool is_pressed;
+    bool slow_release;
     // the virtual key position is a key position outside the range used by the keyboard.
     // it is necessary so hold-taps can uniquely identify a behavior.
     int32_t virtual_key_position;
@@ -46,9 +48,14 @@ struct leader_seq_cfg {
     int8_t layers[];
 };
 
-// set of keys pressed
-uint32_t current_sequence[CONFIG_ZMK_LEADER_MAX_KEYS_PER_SEQUENCE] = {-1};
-// the set of candidate leader based on the currently pressed_keys
+// leader_pressed_keys is filled with an event when a key is pressed.
+// The keys are removed from this array when they are released.
+// Once this array is empty, the behavior is released.
+const struct zmk_position_state_changed
+    *leader_pressed_keys[CONFIG_ZMK_LEADER_MAX_KEYS_PER_SEQUENCE] = {NULL};
+
+uint32_t current_sequence[CONFIG_ZMK_LEADER_MAX_KEYS_PER_SEQUENCE];
+// the set of candidate leader based on the currently leader_pressed_keys
 int num_candidates;
 struct leader_seq_cfg *sequence_candidates[CONFIG_ZMK_LEADER_MAX_SEQUENCES_PER_KEY];
 int num_comp_candidates;
@@ -108,9 +115,37 @@ static bool sequence_active_on_layer(struct leader_seq_cfg *sequence, uint8_t la
     return false;
 }
 
-static bool has_current_sequence(struct leader_seq_cfg *sequence) {
+static bool has_current_sequence(struct leader_seq_cfg *sequence, int count) {
     for (int i = 0; i < count; i++) {
         if (sequence->key_positions[i] != current_sequence[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool is_in_current_sequence(int32_t position) {
+    for (int i = 0; i < CONFIG_ZMK_LEADER_MAX_KEYS_PER_SEQUENCE; i++) {
+        if (position == current_sequence[i]) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool release_key_in_sequence(int32_t position) {
+    for (int i = 0; i < release_count; i++) {
+        if (leader_pressed_keys[i] && position == leader_pressed_keys[i]->position) {
+            leader_pressed_keys[i] = NULL;
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool all_keys_released() {
+    for (int i = 0; i < press_count; i++) {
+        if (NULL != leader_pressed_keys[i]) {
             return false;
         }
     }
@@ -125,11 +160,10 @@ static int clear_candidates() {
     return CONFIG_ZMK_LEADER_MAX_SEQUENCES_PER_KEY;
 }
 
-static void leader_find_candidates(int32_t position) {
+static void leader_find_candidates(int32_t position, int count) {
     clear_candidates();
     num_candidates = 0;
     num_comp_candidates = 0;
-    int number_of_leader_seq_candidates = 0;
     uint8_t highest_active_layer = zmk_keymap_highest_layer_active();
     for (int i = 0; i < CONFIG_ZMK_LEADER_MAX_SEQUENCES_PER_KEY; i++) {
         struct leader_seq_cfg *sequence = sequence_lookup[position][i];
@@ -137,11 +171,11 @@ static void leader_find_candidates(int32_t position) {
             continue;
         }
         if (sequence_active_on_layer(sequence, highest_active_layer) &&
-            sequence->key_positions[count] == position && has_current_sequence(sequence)) {
-            sequence_candidates[number_of_leader_seq_candidates] = sequence;
+            sequence->key_positions[count] == position && has_current_sequence(sequence, count)) {
+            sequence_candidates[num_candidates] = sequence;
             num_candidates++;
             if (sequence->key_position_len == count + 1) {
-                completed_sequence_candidates[number_of_leader_seq_candidates] = sequence;
+                completed_sequence_candidates[num_comp_candidates] = sequence;
                 num_comp_candidates++;
             }
         }
@@ -191,12 +225,16 @@ static void reset_timer(int32_t timestamp) {
 void zmk_leader_activate(int32_t timeout, bool timeout_on_activation, uint32_t position) {
     LOG_DBG("leader key activated");
     leader_status = true;
-    count = 0;
+    press_count = 0;
+    release_count = 0;
     timeout_ms = timeout;
     active_leader_position = position;
     first_release = false;
     if (timeout_on_activation) {
         reset_timer(k_uptime_get());
+    }
+    for (int i = 0; i < CONFIG_ZMK_LEADER_MAX_KEYS_PER_SEQUENCE; i++) {
+        leader_pressed_keys[i] = NULL;
     }
 };
 
@@ -215,8 +253,10 @@ void behavior_leader_key_timer_handler(struct k_work *item) {
     }
     LOG_DBG("Leader deactivated due to timeout");
     for (int i = 0; i < num_comp_candidates; i++) {
-        press_leader_behavior(completed_sequence_candidates[i], k_uptime_get());
-        release_leader_behavior(completed_sequence_candidates[i], k_uptime_get());
+        if (!completed_sequence_candidates[i]->is_pressed) {
+            press_leader_behavior(completed_sequence_candidates[i], k_uptime_get());
+            release_leader_behavior(completed_sequence_candidates[i], k_uptime_get());
+        }
     }
     zmk_leader_deactivate();
 }
@@ -227,40 +267,52 @@ static int position_state_changed_listener(const zmk_event_t *ev) {
         return 0;
     }
 
-    if (!data->state && data->position == active_leader_position && !first_release) {
-        first_release = true;
+    if (!leader_status && !data->state && !all_keys_released()) {
+        if (release_key_in_sequence(data->position)) {
+            return ZMK_EV_EVENT_HANDLED;
+        }
         return 0;
     }
 
     if (leader_status) {
-        leader_find_candidates(data->position);
-
-        if (num_candidates == 0) {
-            if (!data->state) {
-                zmk_leader_deactivate();
-            }
-            return ZMK_EV_EVENT_HANDLED;
-        }
-
         if (data->state) { // keydown
+            leader_find_candidates(data->position, press_count);
             stop_timer();
-            current_sequence[count] = data->position;
+            current_sequence[press_count] = data->position;
+            leader_pressed_keys[press_count] = data;
+            press_count++;
             for (int i = 0; i < num_comp_candidates; i++) {
-                if (completed_sequence_candidates[i]->immediate_trigger ||
-                    (num_candidates == 1 && num_comp_candidates == 1)) {
-                    press_leader_behavior(completed_sequence_candidates[i], data->timestamp);
+                struct leader_seq_cfg *seq = completed_sequence_candidates[i];
+                if (seq->immediate_trigger || (num_candidates == 1 && num_comp_candidates == 1)) {
+                    press_leader_behavior(seq, data->timestamp);
                 }
             }
         } else { // keyup
+            if (data->position == active_leader_position && !first_release) {
+                first_release = true;
+                return 0;
+            }
+            if (!is_in_current_sequence(data->position)) {
+                return 0;
+            }
+            if (num_candidates == 0) {
+                zmk_leader_deactivate();
+                return ZMK_EV_EVENT_HANDLED;
+            }
+
+            release_count++;
+            release_key_in_sequence(data->position);
+
             for (int i = 0; i < num_comp_candidates; i++) {
-                if (completed_sequence_candidates[i]->is_pressed) {
-                    release_leader_behavior(completed_sequence_candidates[i], data->timestamp);
+                struct leader_seq_cfg *seq = completed_sequence_candidates[i];
+                if (seq->is_pressed && all_keys_released()) {
+                    release_leader_behavior(seq, data->timestamp);
+                    num_comp_candidates--;
+                }
+                if (num_candidates == 1 && num_comp_candidates == 0) {
+                    zmk_leader_deactivate();
                 }
             }
-            if (num_candidates == 1 && num_comp_candidates == 1) {
-                zmk_leader_deactivate();
-            }
-            count++;
             reset_timer(data->timestamp);
         }
         return ZMK_EV_EVENT_HANDLED;
@@ -279,6 +331,7 @@ ZMK_SUBSCRIPTION(leader, zmk_position_state_changed);
         .is_pressed = false,                                                                       \
         .key_positions = DT_PROP(n, key_positions),                                                \
         .key_position_len = DT_PROP_LEN(n, key_positions),                                         \
+        .slow_release = DT_PROP(n, slow_release),                                                  \
         .behavior = ZMK_KEYMAP_EXTRACT_BINDING(0, n),                                              \
         .layers = DT_PROP(n, layers),                                                              \
         .layers_len = DT_PROP_LEN(n, layers),                                                      \
