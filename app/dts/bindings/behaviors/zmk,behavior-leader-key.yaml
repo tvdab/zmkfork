@@ -8,7 +8,7 @@ compatible: "zmk,behavior-leader-key"
 include: zero_param.yaml
 
 properties:
-  timeout-on-activation:
+  timerless:
     type: boolean
   timeout-ms:
     type: int

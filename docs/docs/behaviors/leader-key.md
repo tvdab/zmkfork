@@ -37,6 +37,6 @@ To change the timeout term, you can update the existing behavior:
 };
 ```
 
-#### `timeout-on-activation`
+#### `timerless`
 
-By default, the leader key will not have a timeout on the initial press, and will wait for a sequence to be completed or another key to be pressed. Specify `timeout-on-activation` if you want a timeout on the initial leader key press.
+By default, the leader key will have a timeout, and will not wait for a sequence to be completed or another key to be pressed. Specify `timerless` if you want a timeout.

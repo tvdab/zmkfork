@@ -33,6 +33,7 @@ struct k_work_delayable release_timer;
 int64_t release_at;
 bool timer_started;
 bool timer_cancelled;
+bool timerless;
 
 struct leader_seq_cfg {
     int32_t key_positions[CONFIG_ZMK_LEADER_MAX_KEYS_PER_SEQUENCE];
@@ -229,7 +230,7 @@ static void reset_timer(int32_t timestamp) {
     }
 }
 
-void zmk_leader_activate(int32_t timeout, bool timeout_on_activation, uint32_t position) {
+void zmk_leader_activate(int32_t timeout, bool _timerless, uint32_t position) {
     LOG_DBG("leader key activated");
     leader_status = true;
     press_count = 0;
@@ -238,7 +239,8 @@ void zmk_leader_activate(int32_t timeout, bool timeout_on_activation, uint32_t p
     active_leader_position = position;
     layer = zmk_keymap_highest_layer_active();
     first_release = false;
-    if (timeout_on_activation) {
+    timerless = _timerless;
+    if (!timerless) {
         reset_timer(k_uptime_get());
     }
     for (int i = 0; i < CONFIG_ZMK_LEADER_MAX_KEYS_PER_SEQUENCE; i++) {
@@ -322,7 +324,9 @@ static int position_state_changed_listener(const zmk_event_t *ev) {
                     zmk_leader_deactivate();
                 }
             }
-            reset_timer(data->timestamp);
+            if (!timerless) {
+                reset_timer(data->timestamp);
+            }
         }
         return ZMK_EV_EVENT_HANDLED;
     }
